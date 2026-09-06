@@ -3,6 +3,7 @@
 [![Java](https://img.shields.io/badge/Java-25-ED8B00)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.1.1-6DB33F)](https://spring.io/projects/spring-boot)
 [![Maven](https://img.shields.io/badge/Maven-3.9.16-C71A36)](https://maven.apache.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 面向个人项目和单体应用的 **Spring Boot 后端脚手架**。以 DDD 和六边形架构组织代码，提供认证、用户管理、文件存储三个示例模块，以及可直接用于业务开发的分层规范。
 
@@ -354,4 +355,4 @@ IDE 中应启用注解处理，并将项目 SDK 和 Maven 运行 JDK 设为 25�
 
 ## 许可证
 
-当前仓库尚未提供 `LICENSE` 文件，许可条款待项目维护者明确。
+本项目采用 [MIT 许可证](LICENSE)，允许使用、修改、分发及商用，使用时须保留版权声明和许可证文本。
