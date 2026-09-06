@@ -8,6 +8,7 @@
 
 - **六边形架构**：依赖倒置，技术细节（ORM、鉴权、HTTP）与业务逻辑彻底分离
 - **4 层 + common**：Adaptor、Application、Domain、Infrastructure，外加共享内核 common，比 6 层更轻
+- **聚合根即容器**：聚合根只持有根实体、子实体与值对象，不直接持有属性；属性与单实体规则下沉到实体，`id` / `version` 由根实体承载
 - **四种开发模式**：写模式、读模式、纯计算模式、规则+计算模式，附决策树
 - **异常驱动**：领域层抛 `BizException`，全局异常处理器统一转 `Result<T>`
 - **技术栈落地**：每一层都给出 MyBatis-Flex、Sa-Token、MapStruct、Validation 的具体用法与边界
@@ -45,7 +46,7 @@ Cursor Rules 格式编写，可按需调整 `alwaysApply`。
 | `ResultDO` 全链路返回                 | 领域层/应用层抛 `BizException`；`adaptor/common/GlobalExceptionHandler` 统一转 `Result<T>` |
 | `AggregateException` + `BizException` | 统一为 `BizException(ErrorCode)`                                                           |
 | `LevelLock` 分布式锁                  | MyBatis-Flex `@Column(version = true)` 乐观锁；分布式锁按需引入                            |
-| `Field<T>` / `FieldSet<T>` 实体字段   | 普通字段 + Lombok `@Getter/@Setter`，业务修改只走业务方法                                  |
+| `Field<T>` / `FieldSet<T>` 实体字段   | 普通字段 + Lombok `@Getter/@Setter`，业务修改只走业务方法；属性放实体，聚合根只持有实体与值对象 |
 | `BaseValue` 值对象                    | Java `record`                                                                              |
 | `client` 层（HSF 接口契约）           | 去掉；DTO 放 `application/{biz}/dto`，HTTP 由 `adaptor/{biz}/input` 暴露                   |
 | `model` 层（共享模型）                | `common/` 共享内核                                                                         |

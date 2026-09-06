@@ -462,6 +462,11 @@ public class SaTokenSessionAdaptorImpl implements SessionAdaptor {
     public void logout() {
         StpUtil.logout();
     }
+
+    @Override
+    public void kickout(Long userId) {
+        StpUtil.kickout(userId);
+    }
 }
 ```
 

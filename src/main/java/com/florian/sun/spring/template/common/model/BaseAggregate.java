@@ -1,35 +1,26 @@
 package com.florian.sun.spring.template.common.model;
 
-import lombok.Getter;
-import lombok.Setter;
-
-import java.time.LocalDateTime;
-
 /**
  * 聚合根基类
- * version 用于乐观锁，由 RepositoryImpl 从 PO 回填，业务代码禁止修改
+ * 聚合根是实体与值对象的容器，本身不持有任何属性；身份与乐观锁来自根实体
  *
  * @author Florian Sun
  */
-@Getter
-@Setter
 public abstract class BaseAggregate {
 
     /**
-     * 主键，新建时为 null，save 后由 RepositoryImpl 回填
+     * 根实体：与主表一一对应，聚合的 id / version 来源
      */
-    private Long id;
+    protected abstract BaseEntity rootEntity();
 
     /**
-     * 乐观锁版本号
+     * 聚合根 ID，即根实体 ID；新建时为 null，save 后由 RepositoryImpl 回填到根实体
      */
-    private Integer version;
+    public final Long getId() {
+        return rootEntity().getId();
+    }
 
-    private LocalDateTime createTime;
-
-    private LocalDateTime updateTime;
-
-    public boolean isNew() {
-        return id == null;
+    public final boolean isNew() {
+        return getId() == null;
     }
 }

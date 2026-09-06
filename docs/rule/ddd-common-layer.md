@@ -340,6 +340,10 @@ public enum OrderStatusEnum implements BaseEnum<Integer> {
 
 项目中的主键及关联 ID 统一使用 `Long`，领域基类不使用 ID 泛型。
 
+**聚合根只持有实体与值对象，不直接持有属性。** 每个聚合根有且仅有一个 **根实体**（`{名词}Entity`，与主表一一对应），可选若干子实体与值对象；
+`id`、`version`、`createTime`、`updateTime` 等持久化元数据全部放在实体上（每张表都有这四列），聚合根通过 `rootEntity()` 委托取得身份。
+详细规则见 `ddd-domain-layer.md` 2.2 / 2.3 节。
+
 ### 6.1 BaseAggregate
 
 ```java
@@ -347,27 +351,26 @@ package com.florian.sun.spring.template.common.model;
 
 /**
  * 聚合根基类
- * version 用于乐观锁，由 RepositoryImpl 从 PO 回填，业务代码禁止修改
+ * 聚合根是实体与值对象的容器，本身不持有任何属性；身份与乐观锁来自根实体
  */
-@Getter
-@Setter
 public abstract class BaseAggregate {
 
-    /** 主键，新建时为 null，save 后由 RepositoryImpl 回填 */
-    private Long id;
+    /** 根实体：与主表一一对应，聚合的 id / version 来源 */
+    protected abstract BaseEntity rootEntity();
 
-    /** 乐观锁版本号 */
-    private Integer version;
+    /** 聚合根 ID，即根实体 ID；新建时为 null，save 后由 RepositoryImpl 回填到根实体 */
+    public final Long getId() {
+        return rootEntity().getId();
+    }
 
-    private LocalDateTime createTime;
-
-    private LocalDateTime updateTime;
-
-    public boolean isNew() {
-        return id == null;
+    public final boolean isNew() {
+        return getId() == null;
     }
 }
 ```
+
+> `getId()` 是 MapStruct 可见的只读属性，Assembler 里 `@Mapping(target = "orderId", source = "id")` 仍然可用；
+> 因为没有 `setId`，Converter 重建聚合根时不会误写它。
 
 ### 6.2 BaseEntity
 
@@ -376,13 +379,22 @@ package com.florian.sun.spring.template.common.model;
 
 /**
  * 实体基类
- * 实体只在聚合内部有意义，相等性由 id 决定
+ * 实体只在聚合内部有意义，相等性由 id 决定；
+ * id / version / createTime / updateTime 由 RepositoryImpl 从 PO 回填，业务代码禁止修改
  */
 @Getter
 @Setter
 public abstract class BaseEntity {
 
+    /** 主键，新建时为 null，save 后由 RepositoryImpl 回填 */
     private Long id;
+
+    /** 乐观锁版本号，对应表的 version 列 */
+    private Integer version;
+
+    private LocalDateTime createTime;
+
+    private LocalDateTime updateTime;
 
     @Override
     public boolean equals(Object o) {
@@ -405,7 +417,8 @@ public abstract class BaseEntity {
 
 ### 6.3 值对象不需要基类
 
-值对象直接使用 Java `record`，天然不可变、按值相等，命名 `{名词}Value`。详见 `ddd-domain-layer.md` 2.4 节。
+值对象直接使用 Java `record`，天然不可变、按值相等，命名 `{名词}Value`。值对象通常作为实体的字段（落库时展开为该实体所在表的列），
+也可以直接挂在聚合根上。详见 `ddd-domain-layer.md` 2.4 节。
 
 ### 6.4 Param / Result 不需要基类
 

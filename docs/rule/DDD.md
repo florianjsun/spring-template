@@ -100,7 +100,9 @@ input adaptor → application → domain → Repository 接口（由 infrastruct
 
 | 术语                       | 含义                                                                     | 所在层                                    |
 |----------------------------|--------------------------------------------------------------------------|-------------------------------------------|
-| Aggregate / Entity / Value | 聚合根 / 实体 / 值对象                                                   | domain                                    |
+| Aggregate                  | 聚合根：实体与值对象的 **容器** 和对外唯一入口，不直接持有属性；`id` / `isNew()` 委托根实体 | domain                                    |
+| Root Entity                | 根实体：每个聚合恰好一个，与主表一一对应，持有 `id` / `version` / 属性与单实体规则 | domain                                    |
+| Entity / Value             | 子实体（对应子表）/ 值对象（record，不可变）                             | domain                                    |
 | Param / Query / Result     | 领域方法入参 / 仓储查询条件 / 领域计算返回                               | domain                                    |
 | RequestDTO / ResponseDTO   | 对外接口的入参 / 出参                                                    | application                               |
 | Repository                 | 本领域持久化接口                                                         | 接口在 domain，实现在 infrastructure      |
@@ -134,8 +136,8 @@ com.florian.sun.spring.template
 ├── domain/                          # 领域层
 │   └── {业务名}/
 │       ├── model/
-│       │   ├── aggregate/           # 聚合根 {名词}Aggregate
-│       │   ├── entity/              # 实体 {名词}Entity
+│       │   ├── aggregate/           # 聚合根 {名词}Aggregate（只持有根实体、子实体、值对象）
+│       │   ├── entity/              # 实体 {名词}Entity（根实体对应主表，子实体对应子表，持有属性）
 │       │   ├── value/               # 值对象 {名词}Value（record）
 │       │   ├── param/               # {方法名}Param、{方法名}Query
 │       │   ├── result/              # {方法名}Result
@@ -161,7 +163,7 @@ com.florian.sun.spring.template
 │       │   ├── po/                  # {表名}PO extends BasePO
 │       │   │   └── table/           # APT 生成的 {表名}TableDef（不手写）
 │       │   └── mapper/              # {表名}Mapper extends BaseMapper<{表名}PO>
-│       ├── converter/               # MapStruct Converter（PO ↔ 聚合根）
+│       ├── converter/               # MapStruct Converter（PO ↔ 实体，实体装进聚合根）
 │       └── cache/                   # Redis 缓存实现（可选）
 └── adaptor/                         # 适配器层（防腐层）
     ├── common/                      # GlobalExceptionHandler、通用切面

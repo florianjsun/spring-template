@@ -31,7 +31,7 @@ infrastructure/
 **Infrastructure 层是技术实现层，负责把 domain 层定义的 Repository 接口落地为 MyBatis-Flex / Redis 的具体实现。**
 
 - 实现 domain 层的 Repository 接口，对 domain 屏蔽所有技术细节
-- 仅做**纯技术转换**（聚合根 ↔ PO），**禁止包含任何业务逻辑**
+- 仅做**纯技术转换**（实体 ↔ PO，再把实体装进聚合根），**禁止包含任何业务逻辑**
 - 业务逻辑属于 domain 层，Infrastructure 只负责"存"和"取"
 
 #### 与其他层的关系
@@ -281,15 +281,19 @@ Converter 负责 PO 与聚合根 / 实体之间的**纯技术转换**，使用 M
 | 类名     | `{业务名}Converter`，MapStruct 接口                                  | `OrderConverter` |
 | 注解     | `@Mapper(componentModel = "spring")`                                 | —                |
 | 存放位置 | `infrastructure/{业务名}/converter/`                                 | —                |
-| 方法命名 | `toAggregate`、`toPO`、`toEntity`、`toEntityList`、`toAggregateList` | —                |
+| 方法命名 | `toEntity`（PO → 实体）、`toPO`（实体 → PO）、`toAggregate`（PO → 聚合根）、`toEntityList`、`toAggregateList` | —                |
 | 注入方式 | 构造注入到 RepositoryImpl                                            | —                |
 
 #### 设计原则
 
 - 只做**字段映射**，**禁止**业务判断
-- 值对象：PO → 聚合根用 `default` 方法组装 `record`；聚合根 → PO 用 `@Mapping(source = "receiver.province")` 平铺
+- **两级映射**：PO ↔ **实体**是主映射（`toEntity` / `toPO`），`id`、`version`、`createTime`、`updateTime` 在实体与 PO 上同名自动映射；
+  `toAggregate(po)` 只负责把根实体装进聚合根：`@Mapping(target = "order", source = "po")`，MapStruct 会自动复用 `toEntity`
+- `toPO` 的入参是 **根实体**（`toPO(OrderEntity order)`），RepositoryImpl 传 `aggregate.getOrder()`；不要写 `toPO(OrderAggregate)`
+- 值对象：PO → 实体用 `default` 方法组装 `record`；实体 → PO 用 `@Mapping(source = "receiver.province")` 平铺；单列值对象（`PasswordValue`
+  ↔ `passwordHash`）用一对 `default` 方法互转
 - 子实体列表由 RepositoryImpl 单独查询后 `set` 到聚合根，Converter 的 `toAggregate` 对 `items` 声明 `ignore = true`
-- 枚举无需手写转换：PO 与聚合根使用同一个领域枚举类型
+- 枚举无需手写转换：PO 与实体使用同一个领域枚举类型
 - 类名以 `Converter` 结尾，**不能**叫 `XxxMapper`（与 MyBatis-Flex Mapper 冲突）
 
 #### 与 Assembler 的区别
@@ -312,8 +316,12 @@ package com.florian.sun.spring.template.infrastructure.order.converter;
 @Mapper(componentModel = "spring")
 public interface OrderConverter {
 
-    /** PO → 聚合根；子实体由 RepositoryImpl 另行加载 */
+    /** PO → 根实体；id / version / createTime / updateTime 同名自动映射 */
     @Mapping(target = "receiver", source = "po")
+    OrderEntity toEntity(OrderPO po);
+
+    /** PO → 聚合根：把根实体装进容器；子实体由 RepositoryImpl 另行加载 */
+    @Mapping(target = "order", source = "po")
     @Mapping(target = "items", ignore = true)
     OrderAggregate toAggregate(OrderPO po);
 
@@ -326,14 +334,14 @@ public interface OrderConverter {
             po.getReceiverName(), po.getReceiverPhone());
     }
 
-    /** 聚合根 → PO；值对象平铺；deleted 由 MyBatis-Flex 逻辑删除维护 */
+    /** 根实体 → PO；值对象平铺；deleted 由 MyBatis-Flex 逻辑删除维护 */
     @Mapping(target = "receiverProvince", source = "receiver.province")
     @Mapping(target = "receiverCity", source = "receiver.city")
     @Mapping(target = "receiverDetail", source = "receiver.detail")
     @Mapping(target = "receiverName", source = "receiver.receiverName")
     @Mapping(target = "receiverPhone", source = "receiver.receiverPhone")
     @Mapping(target = "deleted", ignore = true)
-    OrderPO toPO(OrderAggregate order);
+    OrderPO toPO(OrderEntity order);
 
     List<OrderItemEntity> toEntityList(List<OrderItemPO> poList);
 
@@ -367,6 +375,7 @@ package com.florian.sun.spring.template.infrastructure.auth;
 
 /**
  * Sa-Token 权限数据源
+ * 角色码取自 UserRoleEnum.name()，供 @SaCheckRole 使用；本模板不使用细粒度权限码
  * 每次 @SaCheckPermission / @SaCheckRole 都会调用，数据量大时请在此处加缓存
  */
 @Component
@@ -377,12 +386,14 @@ public class StpInterfaceImpl implements StpInterface {
 
     @Override
     public List<String> getPermissionList(Object loginId, String loginType) {
-        return userRepository.listPermissionCodes(Long.valueOf(loginId.toString()));
+        return List.of();
     }
 
     @Override
     public List<String> getRoleList(Object loginId, String loginType) {
-        return userRepository.listRoleCodes(Long.valueOf(loginId.toString()));
+        return userRepository.findById(Long.valueOf(loginId.toString()))
+                .map(user -> List.of(user.getUser().getRole().name()))
+                .orElse(List.of());
     }
 }
 ```
@@ -392,17 +403,20 @@ public class StpInterfaceImpl implements StpInterface {
 ```java
 public interface UserRepository {
 
-    Optional<UserAggregate> findById(Long id);
-
-    Optional<UserAggregate> findByUsername(String username);
-
     void save(UserAggregate user);
 
-    List<String> listPermissionCodes(Long userId);
+    Optional<UserAggregate> findById(Long id);
 
-    List<String> listRoleCodes(Long userId);
+    Optional<UserAggregate> findByEmail(String email);
+
+    boolean existsByEmail(String email);
+
+    PageResult<UserAggregate> pageUsers(PageUserQuery query);
 }
 ```
+
+> 需要细粒度权限（`@SaCheckPermission`）时，扩展为 `t_role` / `t_permission` 表，在 `UserRepository` 增加
+> `listPermissionCodes(Long userId)` 并在 `getPermissionList` 中返回；Sa-Token 侧无需改动。
 
 ---
 
@@ -410,7 +424,7 @@ public interface UserRepository {
 
 ### 2.1 核心职责
 
-- **save**：判断 `order.isNew()` 决定 `insertSelective` 还是 `update`；处理子实体的增删改；回填 `id` 与 `version`
+- **save**：判断 `order.isNew()` 决定 `insertSelective` 还是 `update`；处理子实体的增删改；把 `id` 与 `version` 回填到 **根实体**
 - **findById**：加载聚合根及其子实体，返回 `Optional`
 - **remove**：逻辑删除主表与子表
 - 乐观锁冲突翻译为 `BizException(CONCURRENT_CONFLICT)`
@@ -419,11 +433,11 @@ public interface UserRepository {
 
 与 domain 层 Repository 接口保持一致：
 
-| 方法       | 返回值             | 说明                                                                        |
-|------------|--------------------|-----------------------------------------------------------------------------|
-| `save`     | `void`             | 新增后 `aggregate.setId(po.getId())`、`setVersion(0)`；更新后 `version + 1` |
-| `findById` | `Optional<聚合根>` | 不存在返回 `Optional.empty()`                                               |
-| `remove`   | `void`             | 逻辑删除                                                                    |
+| 方法       | 返回值             | 说明                                                                                                  |
+|------------|--------------------|-------------------------------------------------------------------------------------------------------|
+| `save`     | `void`             | 新增后 `root.setId(po.getId())`、`root.setVersion(0)`；更新后 `root.setVersion(version + 1)`（`root = aggregate.getOrder()`） |
+| `findById` | `Optional<聚合根>` | 不存在返回 `Optional.empty()`                                                                         |
+| `remove`   | `void`             | 逻辑删除                                                                                              |
 
 ### 2.3 完整代码示例
 
@@ -448,17 +462,19 @@ public class OrderRepositoryImpl implements OrderRepository {
 
     @Override
     public void save(OrderAggregate order) {
-        OrderPO po = orderConverter.toPO(order);
+        // 持久化元数据（id / version）都在根实体上，PO 也从根实体转换
+        OrderEntity root = order.getOrder();
+        OrderPO po = orderConverter.toPO(root);
         if (order.isNew()) {
-            // 1. 新增主表，主键回填
+            // 1. 新增主表，主键回填到根实体
             orderMapper.insertSelective(po);
-            order.setId(po.getId());
-            order.setVersion(0);
+            root.setId(po.getId());
+            root.setVersion(0);
         } else {
             // 2. 更新主表：MyBatis-Flex 自动追加 WHERE version = ? 并 SET version = version + 1
             int rows = orderMapper.update(po);
             BizAssert.isTrue(rows == 1, CommonErrorCode.CONCURRENT_CONFLICT);
-            order.setVersion(order.getVersion() + 1);
+            root.setVersion(root.getVersion() + 1);
         }
         // 3. 同步子实体
         saveItems(order);
@@ -633,15 +649,16 @@ public class CouponRuleRepositoryImpl implements CouponRuleRepository {
     }
 
     @Override
-    public void save(CouponRuleAggregate rule) {
-        CouponRulePO po = couponRuleConverter.toPO(rule);
-        if (rule.isNew()) {
+    public void save(CouponRuleAggregate aggregate) {
+        CouponRuleEntity root = aggregate.getRule();
+        CouponRulePO po = couponRuleConverter.toPO(root);
+        if (aggregate.isNew()) {
             couponRuleMapper.insertSelective(po);
-            rule.setId(po.getId());
-            rule.setVersion(0);
+            root.setId(po.getId());
+            root.setVersion(0);
         } else {
             BizAssert.isTrue(couponRuleMapper.update(po) == 1, CommonErrorCode.CONCURRENT_CONFLICT);
-            rule.setVersion(rule.getVersion() + 1);
+            root.setVersion(root.getVersion() + 1);
         }
     }
 }
@@ -652,15 +669,19 @@ package com.florian.sun.spring.template.infrastructure.coupon.converter;
 
 /**
  * 优惠规则转换器
+ * 单表聚合：toEntity 做主映射，toAggregate 只负责装进容器
  */
 @Mapper(componentModel = "spring")
 public interface CouponRuleConverter {
 
+    CouponRuleEntity toEntity(CouponRulePO po);
+
+    @Mapping(target = "rule", source = "po")
     CouponRuleAggregate toAggregate(CouponRulePO po);
 
     List<CouponRuleAggregate> toAggregateList(List<CouponRulePO> poList);
 
     @Mapping(target = "deleted", ignore = true)
-    CouponRulePO toPO(CouponRuleAggregate rule);
+    CouponRulePO toPO(CouponRuleEntity rule);
 }
 ```

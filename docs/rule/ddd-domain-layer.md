@@ -15,8 +15,8 @@ domain 层按业务领域划分顶层包，领域下的子包结构保持不变�
 domain/
 ├── {业务名}/                  # 按业务领域划分（如：order、user、coupon）
 │   ├── model/
-│   │   ├── aggregate/         # 聚合根 {名词}Aggregate
-│   │   ├── entity/            # 实体 {名词}Entity
+│   │   ├── aggregate/         # 聚合根 {名词}Aggregate：只持有根实体、子实体、值对象
+│   │   ├── entity/            # 实体 {名词}Entity：根实体（对应主表）与子实体（对应子表），持有属性
 │   │   ├── value/             # 值对象 {名词}Value（record）
 │   │   ├── param/             # 方法入参 {方法名}Param、仓储查询条件 {方法名}Query
 │   │   ├── result/            # 领域计算返回 {方法名}Result
@@ -367,7 +367,7 @@ public class SalePriceCalculateQueryAppService {
 2. 调用聚合根业务方法（校验 + 修改状态）
 3. 通过 Repository 持久化
 
-不需要显式加锁：并发冲突由 `BaseAggregate.version` 乐观锁在 `save` 时检测，冲突抛 `CommonErrorCode.CONCURRENT_CONFLICT`。
+不需要显式加锁：并发冲突由根实体的 `version` 乐观锁在 `save` 时检测，冲突抛 `CommonErrorCode.CONCURRENT_CONFLICT`。
 
 #### 行为约束
 
@@ -433,29 +433,56 @@ public class OrderDomainService {
 2. **强一致性**：聚合内的所有修改在一次 `save` 中落库，同一事务
 3. **小聚合**：避免把关联对象全部塞进一个聚合；跨聚合通过 ID 引用
 4. **封装性**：状态只能通过业务方法修改
+5. **聚合根是容器**：聚合根只持有实体与值对象，属性与单实体规则下沉到实体
+
+#### 字段约束：聚合根只持有实体与值对象
+
+| 规则项       | 规范                                                                                                                                   |
+|--------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| 根实体       | **必有且仅有一个** `{名词}Entity` 字段，与主表一一对应，字段名用业务名词（`order`、`user`）；`rootEntity()` 返回它                     |
+| 子实体       | `{名词}Entity` 或 `List<{名词}Entity>`，与子表一一对应                                                                                 |
+| 值对象       | `{名词}Value`（record）；通常挂在所属实体上，跨实体的聚合级概念可直接挂在聚合根上                                                      |
+| 禁止的字段   | `String`、`Long`、枚举、`BigDecimal`、`LocalDateTime` 等基础类型 / 简单类型字段；`id`、`version` 等元数据（它们在 `BaseEntity` 上）    |
+| 禁止透传     | 不写 `getBuyerId() { return order.getBuyerId(); }` 这类透传 getter；读取属性统一走 `aggregate.getOrder().getBuyerId()`                 |
+| 单表聚合     | 只有根实体、没有子实体的聚合（如用户、文件）是正常形态：聚合根就是「薄壳 + 根实体」，方法全部委托根实体，不要为了「显得有内容」把属性拉回聚合根 |
+
+**职责划分**：
+
+| 位置   | 负责                                                                                                          |
+|--------|---------------------------------------------------------------------------------------------------------------|
+| 聚合根 | 对外唯一入口；工厂方法组装实体；**跨实体**的一致性规则与计算（如按明细算总额）；单实体规则直接委托给实体方法 |
+| 实体   | 持有属性；**只修改自身字段、校验自身不变量**；不引用其他实体（跨实体逻辑由聚合根做）                          |
+| 值对象 | 不可变；紧凑构造器校验不变量；只提供计算 / 判断方法                                                           |
 
 #### 命名规范
 
-| 规则项   | 规范                                                                               | 示例                           |
-|----------|------------------------------------------------------------------------------------|--------------------------------|
-| 类名     | `{名词}Aggregate extends BaseAggregate`                                      | `OrderAggregate`               |
-| Lombok   | `@Getter @Setter`，禁止 `@Data`（会生成基于所有字段的 equals，聚合根应按 id 比较） | —                              |
-| 构造     | 新建走静态工厂 `create({方法名}Param)`；保留无参构造供 Converter 重建              | `OrderAggregate.create(param)` |
-| 方法命名 | 动词                                                                               | `confirmPayment`、`cancel`     |
-| 参数     | `{方法名}Param` 或基础类型                                                         | —                              |
-| 返回值   | `void`、基础类型、值对象、实体                                                     | —                              |
+| 规则项   | 规范                                                                                         | 示例                           |
+|----------|----------------------------------------------------------------------------------------------|--------------------------------|
+| 类名     | `{名词}Aggregate extends BaseAggregate`                                                      | `OrderAggregate`               |
+| Lombok   | `@Getter @Setter`，禁止 `@Data`（会生成基于所有字段的 equals，聚合根应按 id 比较）           | —                              |
+| 构造     | 新建走静态工厂 `create({方法名}Param)`，内部调用各实体的 `create`；保留无参构造供 Converter 重建 | `OrderAggregate.create(param)` |
+| 根实体   | 覆写 `protected BaseEntity rootEntity()` 返回根实体字段                                       | `return order;`                |
+| 方法命名 | 动词                                                                                         | `confirmPayment`、`cancel`     |
+| 参数     | `{方法名}Param` 或基础类型                                                                   | —                              |
+| 返回值   | `void`、基础类型、值对象、实体                                                               | —                              |
 
 #### setter 使用规则
 
-- setter 存在的 **唯一目的**是让 infrastructure 的 MapStruct Converter 从 PO 重建聚合根
+- setter 存在的 **唯一目的**是让 infrastructure 的 MapStruct Converter 从 PO 重建聚合根 / 实体，以及让 RepositoryImpl 回填 `id` / `version`
 - `domain`、`application` 代码 **禁止**调用聚合根 / 实体的 setter 修改状态，必须通过业务方法
-- 聚合根内部修改自身字段直接用 `this.field = ...`
+- 实体内部修改自身字段直接用 `this.field = ...`；聚合根内部只在工厂方法里给实体字段赋值
 
 #### 四种方法类型
 
-**1. 写操作类方法**（修改状态）：业务规则校验 + 修改状态
+**1. 写操作类方法**（修改状态）：聚合根方法是入口，单实体规则委托给实体，实体内部做校验 + 修改状态
 
 ```java
+// 聚合根：入口 + 委托
+public void confirmPayment(ConfirmPaymentParam param) {
+    order.confirmPayment(param);
+}
+
+// 根实体：校验自身不变量并修改自身字段
 public void confirmPayment(ConfirmPaymentParam param) {
     BizAssert.isTrue(this.status == OrderStatusEnum.WAIT_PAY, OrderErrorCode.ORDER_STATUS_INVALID);
     BizAssert.isTrue(this.totalAmount.compareTo(param.getPaidAmount()) == 0, OrderErrorCode.PAY_AMOUNT_MISMATCH);
@@ -464,9 +491,10 @@ public void confirmPayment(ConfirmPaymentParam param) {
 }
 ```
 
-**2. 计算类方法**（不修改状态）：
+**2. 计算类方法**（不修改状态）：跨实体计算放聚合根，单实体计算放实体
 
 ```java
+// 聚合根：跨实体（遍历子实体）
 public BigDecimal calculateTotalAmount() {
     return items.stream()
             .map(OrderItemEntity::subtotal)
@@ -488,6 +516,12 @@ public OrderItemEntity findItem(Long itemId) {
 **4. 判断类方法**（不修改状态）：
 
 ```java
+// 聚合根：委托
+public boolean isPaid() {
+    return order.isPaid();
+}
+
+// 根实体
 public boolean isPaid() {
     return this.status == OrderStatusEnum.PAID;
 }
@@ -495,28 +529,108 @@ public boolean isPaid() {
 
 > 聚合根不会直接被序列化成 HTTP 响应（输出走 ResponseDTO），因此不需要 `@JsonIgnore` 之类的注解。但 MapStruct 在 Aggregate →
 > DTO 时会把 `isXxx()` / `getXxx()` 识别为属性，若 DTO 恰好有同名字段会被自动映射；不希望映射时在 Assembler 中
-> `@Mapping(target = "xxx", ignore = true)`。
+> `@Mapping(target = "xxx", ignore = true)`。根实体的属性通过 `@Mapping(target = ".", source = "order")` 平铺到 DTO，见
+> `ddd-application-layer.md` 1.9 节。
 
 #### 方法膨胀控制策略
 
 - **状态流转方法**：严格对应业务状态变化（`confirmPayment`、`cancel`、`ship`），不加技术性的 `updateStatus`
 - **补充数据类方法**：按业务语义合并（如 `fillReceiver` 代替多个字段的 `setXxx`），方法名体现业务意图
 - **读方法**：数量多时可让调用方通过 `findItem` 拿到实体后调用实体自己的方法，减少聚合根方法数
+- **委托方法**：聚合根对外暴露的方法与根实体一一对应是正常的；不要因为「只是转发」就把规则挪回聚合根
 
 #### 代码模板
 
 ```java
 package com.florian.sun.spring.template.domain.order.model.aggregate;
 
-import cn.hutool.core.util.IdUtil;
-
 /**
  * 订单聚合根
- * 聚合边界：订单主表 + 订单明细
+ * 聚合边界：订单根实体 + 订单明细子实体；聚合根本身不持有基础类型字段
  */
 @Getter
 @Setter
 public class OrderAggregate extends BaseAggregate {
+
+    /** 根实体：t_order */
+    private OrderEntity order;
+
+    /** 子实体：t_order_item */
+    private List<OrderItemEntity> items = new ArrayList<>();
+
+    @Override
+    protected BaseEntity rootEntity() {
+        return order;
+    }
+
+    /** 工厂方法：新建订单的唯一入口，组装实体并维护跨实体一致性 */
+    public static OrderAggregate create(CreateOrderParam param) {
+        BizAssert.notEmpty(param.getItems(), OrderErrorCode.ORDER_ITEMS_EMPTY);
+        OrderAggregate aggregate = new OrderAggregate();
+        aggregate.items = param.getItems().stream().map(OrderItemEntity::create).collect(Collectors.toList());
+        aggregate.order = OrderEntity.create(param, aggregate.calculateTotalAmount());
+        return aggregate;
+    }
+
+    /** 单实体规则：委托根实体 */
+    public void confirmPayment(ConfirmPaymentParam param) {
+        order.confirmPayment(param);
+    }
+
+    public void cancel(CancelOrderParam param) {
+        order.cancel(param);
+    }
+
+    /** 跨实体计算：聚合根负责 */
+    public BigDecimal calculateTotalAmount() {
+        return items.stream().map(OrderItemEntity::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    public OrderItemEntity findItem(Long itemId) {
+        return items.stream()
+                .filter(item -> Objects.equals(item.getId(), itemId))
+                .findFirst()
+                .orElseThrow(() -> new BizException(OrderErrorCode.ORDER_ITEM_NOT_FOUND));
+    }
+
+    public boolean isPaid() {
+        return order.isPaid();
+    }
+
+    public boolean isOwnedBy(Long userId) {
+        return order.isOwnedBy(userId);
+    }
+}
+```
+
+### 2.3 Entity 实体规范
+
+实体分两类：**根实体**（每个聚合恰好一个，与主表对应，聚合的 `id` / `version` 来自它）与 **子实体**（与子表对应，通过 `{父表}Id` 关联）。两者规范相同：
+
+| 规则项   | 规范                                                                                  | 示例                              |
+|----------|---------------------------------------------------------------------------------------|-----------------------------------|
+| 类名     | `{名词}Entity extends BaseEntity`                                                     | `OrderEntity`、`OrderItemEntity`  |
+| Lombok   | `@Getter @Setter`（`BaseEntity` 已按 id 实现 equals）                                 | —                                 |
+| 归属     | 只能通过聚合根访问，不能被 Repository 单独存取                                        | —                                 |
+| 属性类型 | 普通字段、领域枚举、值对象（不再使用 `Field<T>`）；`id`/`version`/时间戳继承自基类    | —                                 |
+| 构造     | 静态工厂 `create(...)` 校验自身不变量；保留无参构造供 Converter 重建                  | `OrderEntity.create(param, total)` |
+| 方法     | 只修改 **自身**字段、校验 **自身**不变量；不持有、不引用其他实体                       | `confirmPayment`、`subtotal`      |
+| 异常     | `BizException`                                                                        | —                                 |
+
+#### 根实体模板
+
+```java
+package com.florian.sun.spring.template.domain.order.model.entity;
+
+import cn.hutool.core.util.IdUtil;
+
+/**
+ * 订单根实体
+ * 与 t_order 一一对应，持有订单自身属性与单实体规则
+ */
+@Getter
+@Setter
+public class OrderEntity extends BaseEntity {
 
     private String orderNo;
     private Long buyerId;
@@ -525,18 +639,15 @@ public class OrderAggregate extends BaseAggregate {
     private AddressValue receiver;
     private LocalDateTime payTime;
     private String cancelReason;
-    private List<OrderItemEntity> items = new ArrayList<>();
 
-    /** 工厂方法：新建订单的唯一入口 */
-    public static OrderAggregate create(CreateOrderParam param) {
-        BizAssert.notEmpty(param.getItems(), OrderErrorCode.ORDER_ITEMS_EMPTY);
-        OrderAggregate order = new OrderAggregate();
+    /** 总额由聚合根按明细算好后传入，实体不感知子实体 */
+    public static OrderEntity create(CreateOrderParam param, BigDecimal totalAmount) {
+        OrderEntity order = new OrderEntity();
         order.orderNo = "O" + IdUtil.getSnowflakeNextIdStr();
         order.buyerId = param.getBuyerId();
         order.receiver = param.getReceiver();
-        order.items = param.getItems().stream().map(OrderItemEntity::create).collect(Collectors.toList());
         order.status = OrderStatusEnum.WAIT_PAY;
-        order.totalAmount = order.calculateTotalAmount();
+        order.totalAmount = totalAmount;
         return order;
     }
 
@@ -554,10 +665,6 @@ public class OrderAggregate extends BaseAggregate {
         this.cancelReason = param.getReason();
     }
 
-    public BigDecimal calculateTotalAmount() {
-        return items.stream().map(OrderItemEntity::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
     public boolean isPaid() {
         return status == OrderStatusEnum.PAID;
     }
@@ -568,23 +675,14 @@ public class OrderAggregate extends BaseAggregate {
 }
 ```
 
-### 2.3 Entity 实体规范
-
-Entity 遵循聚合根规范，差异如下：
-
-| 规则项   | 规范                                                  | 示例              |
-|----------|-------------------------------------------------------|-------------------|
-| 类名     | `{名词}Entity extends BaseEntity`               | `OrderItemEntity` |
-| Lombok   | `@Getter @Setter`（`BaseEntity` 已按 id 实现 equals） | —                 |
-| 归属     | 只能通过聚合根访问，不能被 Repository 单独存取        | —                 |
-| 属性类型 | 普通字段（不再使用 `Field<T>`）                       | —                 |
-| 异常     | `BizException`                                        | —                 |
+#### 子实体模板
 
 ```java
 package com.florian.sun.spring.template.domain.order.model.entity;
 
 /**
- * 订单明细实体
+ * 订单明细子实体
+ * 与 t_order_item 一一对应
  */
 @Getter
 @Setter
@@ -627,8 +725,9 @@ public class OrderItemEntity extends BaseEntity {
 | 规则项 | 规范                         | 示例                               |
 |--------|------------------------------|------------------------------------|
 | 类名   | `{名词}Value`，使用 `record` | `AddressValue`、`OrderItemValue`   |
-| 方法   | 只能有计算类、判断类方法     | `fullAddress()`、`isSameCity(...)` |
+| 方法   | 只能有计算类、判断类方法；允许静态工厂封装构造规则 | `fullAddress()`、`PasswordValue.encode(...)` |
 | 校验   | 在紧凑构造器中校验不变量     | —                                  |
+| 归属   | 作为实体字段（落库展开为该实体所在表的列）；跨实体的聚合级概念可直接作为聚合根字段 | `OrderEntity.receiver`             |
 
 ```java
 package com.florian.sun.spring.template.domain.order.model.value;
@@ -648,7 +747,8 @@ public record AddressValue(String province, String city, String detail, String r
 }
 ```
 
-> 值对象落库时通常展开为聚合根所在表的多个列（`receiver_province`、`receiver_city` …），由 Converter 负责拆装。
+> 值对象落库时通常展开为所属实体对应表的多个列（`receiver_province`、`receiver_city` …），由 Converter 负责拆装；
+> 单字段值对象（如 `PasswordValue` ↔ `password_hash`）在 Converter 里用 `default` 方法互转。
 
 ### 2.5 Repository 写模式规范
 
@@ -671,35 +771,112 @@ public interface OrderRepository {
 }
 ```
 
-### 2.6 用户认证示例（domain 直接使用 Hutool）
+### 2.6 用户认证示例（单表聚合 + 值对象 + domain 直接使用 Hutool）
 
-密码校验直接调用 Hutool 的 `DigestUtil.bcryptCheck()`，不额外封装密码工具类。密码哈希在创建或修改密码时使用 `DigestUtil.bcrypt()`；新密码先校验非空且 UTF-8 编码后不超过 72 字节。
+用户是典型的 **单表聚合**：`UserAggregate` 只有一个根实体 `UserEntity`，方法全部委托；密码封装为值对象 `PasswordValue`，
+内部直接调用 Hutool 的 `DigestUtil.bcrypt()` / `bcryptCheck()`，不额外封装密码工具类。新密码先校验非空且 UTF-8 编码后不超过 72 字节。
 
 ```java
 package com.florian.sun.spring.template.domain.user.model.aggregate;
 
-import cn.hutool.crypto.digest.DigestUtil;
-
 /**
  * 用户聚合根
+ * 单表聚合：只有根实体，方法全部委托
  */
 @Getter
 @Setter
 public class UserAggregate extends BaseAggregate {
 
-    private String username;
-    private String nickname;
-    private String passwordHash;
-    private UserStatusEnum status;
-    private MemberLevelEnum memberLevel;
+    /** 根实体：t_user */
+    private UserEntity user;
+
+    @Override
+    protected BaseEntity rootEntity() {
+        return user;
+    }
+
+    public static UserAggregate create(RegisterUserParam param) {
+        UserAggregate aggregate = new UserAggregate();
+        aggregate.user = UserEntity.create(param);
+        return aggregate;
+    }
 
     public void verifyPassword(String rawPassword) {
-        BizAssert.notBlank(rawPassword, UserErrorCode.PASSWORD_INCORRECT);
-        BizAssert.isTrue(DigestUtil.bcryptCheck(rawPassword, passwordHash), UserErrorCode.PASSWORD_INCORRECT);
+        user.verifyPassword(rawPassword);
+    }
+
+    public void ensureActive() {
+        user.ensureActive();
+    }
+}
+```
+
+```java
+package com.florian.sun.spring.template.domain.user.model.entity;
+
+/**
+ * 用户根实体
+ * 与 t_user 一一对应
+ */
+@Getter
+@Setter
+public class UserEntity extends BaseEntity {
+
+    private String email;
+    private PasswordValue password;
+    private String nickname;
+    private Long avatarFileId;
+    private UserRoleEnum role;
+    private UserStatusEnum status;
+
+    public static UserEntity create(RegisterUserParam param) {
+        UserEntity user = new UserEntity();
+        user.email = param.getEmail();
+        user.password = PasswordValue.encode(param.getRawPassword());
+        user.nickname = param.getNickname();
+        user.role = UserRoleEnum.USER;
+        user.status = UserStatusEnum.ACTIVE;
+        return user;
+    }
+
+    public void verifyPassword(String rawPassword) {
+        BizAssert.isTrue(password.matches(rawPassword), UserErrorCode.EMAIL_OR_PASSWORD_INCORRECT);
     }
 
     public void ensureActive() {
         BizAssert.isTrue(status == UserStatusEnum.ACTIVE, UserErrorCode.USER_DISABLED);
+    }
+}
+```
+
+```java
+package com.florian.sun.spring.template.domain.user.model.value;
+
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.crypto.digest.DigestUtil;
+
+/**
+ * 密码值对象
+ * 只持有 BCrypt 哈希；落库为 t_user.password_hash 单列
+ */
+public record PasswordValue(String hash) {
+
+    /** BCrypt 只取前 72 字节，超长部分会被静默截断，这里显式拒绝 */
+    private static final int MAX_RAW_BYTES = 72;
+
+    public PasswordValue {
+        BizAssert.notBlank(hash, UserErrorCode.PASSWORD_INVALID);
+    }
+
+    /** 明文 → 哈希，创建用户 / 修改密码时使用 */
+    public static PasswordValue encode(String rawPassword) {
+        BizAssert.notBlank(rawPassword, UserErrorCode.PASSWORD_INVALID);
+        BizAssert.isTrue(rawPassword.getBytes(StandardCharsets.UTF_8).length <= MAX_RAW_BYTES, UserErrorCode.PASSWORD_INVALID);
+        return new PasswordValue(DigestUtil.bcrypt(rawPassword));
+    }
+
+    public boolean matches(String rawPassword) {
+        return StrUtil.isNotBlank(rawPassword) && DigestUtil.bcryptCheck(rawPassword, hash);
     }
 }
 ```
@@ -716,10 +893,10 @@ public class UserDomainService {
 
     private final UserRepository userRepository;
 
-    /** 认证：用户名 + 密码 + 账号状态，全部通过返回聚合根，否则抛 BizException */
+    /** 认证：邮箱 + 密码 + 账号状态，全部通过返回聚合根，否则抛 BizException */
     public UserAggregate authenticate(AuthenticateParam param) {
-        UserAggregate user = userRepository.findByUsername(param.getUsername())
-                .orElseThrow(() -> new BizException(UserErrorCode.PASSWORD_INCORRECT));
+        UserAggregate user = userRepository.findByEmail(param.getEmail())
+                .orElseThrow(() -> new BizException(UserErrorCode.EMAIL_OR_PASSWORD_INCORRECT));
         user.verifyPassword(param.getRawPassword());
         user.ensureActive();
         return user;
@@ -868,7 +1045,7 @@ public class DiscountCalculateDomainService {
         List<CouponRuleAggregate> rules = couponRuleRepository.listEnabled();
         BizAssert.notEmpty(rules, CouponErrorCode.RULE_EMPTY);
 
-        rules.sort(Comparator.comparingInt(CouponRuleAggregate::getPriority).reversed());
+        rules.sort(Comparator.comparingInt((CouponRuleAggregate r) -> r.getRule().getPriority()).reversed());
 
         for (CouponRuleAggregate rule : rules) {
             if (rule.match(param)) {
@@ -882,8 +1059,8 @@ public class DiscountCalculateDomainService {
 
 ### 5.2 规则 Aggregate 规范
 
-- 规则聚合根提供 **无副作用**的 `match` / `calculate` 方法
-- 匹配与计算逻辑必须内聚在聚合根 / 实体中， **禁止泄漏到 DomainService**
+- 规则聚合根提供 **无副作用**的 `match` / `calculate` 方法，委托给根实体
+- 匹配与计算逻辑必须内聚在实体中， **禁止泄漏到 DomainService**
 - 每个方法聚焦单一职责，方法名表达业务意图
 
 ```java
@@ -891,10 +1068,39 @@ package com.florian.sun.spring.template.domain.coupon.model.aggregate;
 
 /**
  * 优惠规则聚合根
+ * 单表聚合：只有根实体
  */
 @Getter
 @Setter
 public class CouponRuleAggregate extends BaseAggregate {
+
+    /** 根实体：t_coupon_rule */
+    private CouponRuleEntity rule;
+
+    @Override
+    protected BaseEntity rootEntity() {
+        return rule;
+    }
+
+    public boolean match(CalculateDiscountParam param) {
+        return rule.match(param);
+    }
+
+    public BigDecimal calculateDiscount(CalculateDiscountParam param) {
+        return rule.calculateDiscount(param);
+    }
+}
+```
+
+```java
+package com.florian.sun.spring.template.domain.coupon.model.entity;
+
+/**
+ * 优惠规则根实体
+ */
+@Getter
+@Setter
+public class CouponRuleEntity extends BaseEntity {
 
     private String ruleName;
     private Integer priority;

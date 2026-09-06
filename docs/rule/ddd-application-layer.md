@@ -300,8 +300,8 @@ Controller 用 `@Validated(ValidGroup.Create.class)` 指定分组，见 `ddd-ada
 
 **禁止的行为**：
 
-- 包含核心业务规则（状态流转判断、金额计算公式、规则匹配）——放聚合根 / DomainService
-- 调用聚合根 / 实体的 setter 修改状态
+- 包含核心业务规则（状态流转判断、金额计算公式、规则匹配）——放聚合根 / 实体 / DomainService
+- 调用聚合根 / 实体的 setter 修改状态（读取属性走 `aggregate.getXxxEntity().getYyy()` 是允许的）
 - 直接操作数据库或 HTTP
 
 ### 1.9 Assembler 转换类规范
@@ -317,9 +317,16 @@ Controller 用 `@Validated(ValidGroup.Create.class)` 指定分组，见 `ddd-ada
 **MapStruct 注意事项**：
 
 - 目标是 `record`（值对象、record DTO）时 MapStruct 自动使用构造器映射
-- 多源参数映射时属性名冲突要显式 `@Mapping(target = "id", source = "order.id")`
+- 多源参数映射时属性名冲突要显式 `@Mapping(target = "id", source = "aggregate.id")`
 - 聚合根的 `isXxx()` / `getXxx()` 会被当成属性；不希望映射到 DTO 同名字段时 `ignore = true`
 - 需要 `lombok-mapstruct-binding` 在注解处理器路径上（见 `README.md` 前置准备）
+
+**聚合根 → ResponseDTO 的平铺写法**：聚合根不直接持有属性，属性在根实体上（`aggregate.getOrder().getOrderNo()`）。Assembler 用
+`@Mapping(target = ".", source = "order")` 把根实体的所有属性平铺到 DTO，`id` 走聚合根委托的 `getId()`：
+
+- 单源方法的参数命名为 `aggregate`（不要与根实体字段名 `order` / `user` 相同，否则 `source = "order"` 会被解析成参数而不是属性）
+- 多源方法用 `source = "aggregate.order"` 指定嵌套路径；多个 `target = "."` 之间不能有同名属性
+- 值对象字段（如 `receiver`）按需 `@Mapping(target = "receiver", source = "order.receiver")` 转成对应 DTO
 
 ```java
 package com.florian.sun.spring.template.application.order.assembler;
@@ -347,17 +354,20 @@ public interface OrderAssembler {
     @Mapping(target = "buyerId", source = "operatorId")
     PageOrderQuery toPageOrderQuery(PageMyOrdersRequestDTO requestDTO);
 
+    /** 根实体属性平铺到 DTO；orderId 取聚合根委托的 id */
     @Mapping(target = "orderId", source = "id")
-    CreateOrderResponseDTO toCreateOrderResponseDTO(OrderAggregate order);
+    @Mapping(target = ".", source = "order")
+    CreateOrderResponseDTO toCreateOrderResponseDTO(OrderAggregate aggregate);
 
     @Mapping(target = "orderId", source = "id")
-    OrderItemResponseDTO toOrderItemResponseDTO(OrderAggregate order);
+    @Mapping(target = ".", source = "order")
+    OrderItemResponseDTO toOrderItemResponseDTO(OrderAggregate aggregate);
 
-    @Mapping(target = "orderId", source = "order.id")
-    @Mapping(target = "orderNo", source = "order.orderNo")
-    @Mapping(target = "buyerNickname", source = "buyer.nickname")
+    @Mapping(target = "orderId", source = "aggregate.id")
+    @Mapping(target = ".", source = "aggregate.order")
+    @Mapping(target = "buyerNickname", source = "buyer.user.nickname")
     @Mapping(target = "logistics", source = "logistics")
-    OrderDetailResponseDTO toOrderDetailResponseDTO(OrderAggregate order, UserAggregate buyer, LogisticsInfoDTO logistics);
+    OrderDetailResponseDTO toOrderDetailResponseDTO(OrderAggregate aggregate, UserAggregate buyer, LogisticsInfoDTO logistics);
 }
 ```
 
@@ -408,6 +418,9 @@ public interface SessionAdaptor {
 
     /** 注销当前会话 */
     void logout();
+
+    /** 将指定用户的所有会话踢下线（禁用用户时使用） */
+    void kickout(Long userId);
 }
 
 public record SessionDTO(String tokenName, String tokenValue, long timeoutSeconds) {
@@ -472,7 +485,7 @@ public class AuthAppService {
     private final AuthAssembler authAssembler;
 
     public LoginResponseDTO login(LoginRequestDTO requestDTO) {
-        // 1. 领域层校验用户名、密码、账号状态，失败抛 BizException
+        // 1. 领域层校验邮箱、密码、账号状态，失败抛 BizException
         UserAggregate user = userDomainService.authenticate(authAssembler.toAuthenticateParam(requestDTO));
 
         // 2. 通过 Adaptor 签发登录态（实现类内部调用 StpUtil.login）
@@ -536,11 +549,12 @@ public class OrderQueryAppService {
                 .orElseThrow(() -> new BizException(OrderErrorCode.ORDER_NOT_FOUND));
         BizAssert.isTrue(order.isOwnedBy(operatorId), OrderErrorCode.NOT_ORDER_OWNER);
 
-        UserAggregate buyer = userRepository.findById(order.getBuyerId())
+        // 属性在根实体上：aggregate.getOrder().getXxx()；判断类方法直接调聚合根
+        UserAggregate buyer = userRepository.findById(order.getOrder().getBuyerId())
                 .orElseThrow(() -> new BizException(UserErrorCode.USER_NOT_FOUND));
 
         LogisticsInfoDTO logistics = order.isPaid()
-                ? logisticsAdaptor.queryByOrderNo(order.getOrderNo()).orElse(null)
+                ? logisticsAdaptor.queryByOrderNo(order.getOrder().getOrderNo()).orElse(null)
                 : null;
 
         return orderAssembler.toOrderDetailResponseDTO(order, buyer, logistics);
@@ -652,7 +666,7 @@ public class DiscountPreCalculateQueryAppService {
                 .orElseThrow(() -> new BizException(UserErrorCode.USER_NOT_FOUND));
 
         // 2. 组装 Param，DomainService 加载规则并计算
-        CalculateDiscountParam param = discountAssembler.toParam(requestDTO, user.getMemberLevel());
+        CalculateDiscountParam param = discountAssembler.toParam(requestDTO, user.getUser().getMemberLevel());
         CalculateDiscountResult result = discountCalculateDomainService.calculateDiscount(param);
 
         // 3. Result → ResponseDTO

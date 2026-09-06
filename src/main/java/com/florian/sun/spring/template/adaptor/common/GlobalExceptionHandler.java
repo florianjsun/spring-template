@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.stream.Collectors;
 
@@ -72,6 +73,15 @@ public class GlobalExceptionHandler {
     public Result<Void> handleBadRequest(Exception e) {
         log.warn("请求参数错误: {}", e.getMessage());
         return Result.fail(CommonErrorCode.PARAM_ERROR);
+    }
+
+    /**
+     * 上传文件超出 spring.servlet.multipart 限制
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result<Void> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException e) {
+        log.warn("上传文件超出大小限制: {}", e.getMessage());
+        return Result.fail(CommonErrorCode.PARAM_ERROR.getCode(), "上传文件超出大小限制");
     }
 
     /**

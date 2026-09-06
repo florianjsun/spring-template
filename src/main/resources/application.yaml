@@ -1,6 +1,10 @@
 spring:
   application:
     name: spring-template
+  servlet:
+    multipart:
+      max-file-size: 20MB       # 单文件上限，超出抛 MaxUploadSizeExceededException
+      max-request-size: 25MB    # 整个 multipart 请求上限
   datasource:
     url: jdbc:mysql://localhost:3306/spring_template?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
     username: root
@@ -27,3 +31,13 @@ sa-token:
   token-style: uuid
   is-log: false
   is-read-cookie: false        # 前后端分离，只读 header
+
+file:
+  storage:
+    s3:                        # S3 / MinIO 兼容对象存储，bucket 需预先创建
+      endpoint: http://localhost:9000
+      region: us-east-1
+      access-key: minioadmin
+      secret-key: minioadmin
+      bucket: spring-template
+      path-style-access: true  # MinIO 需要 path-style；AWS S3 可设为 false

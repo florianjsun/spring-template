@@ -17,6 +17,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
 
     private static final String[] EXCLUDE_PATHS = {
             "/auth/login",
+            "/auth/register",
             "/error",
             "/v3/api-docs/**",
             "/swagger-ui/**",
