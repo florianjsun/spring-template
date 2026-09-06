@@ -34,7 +34,8 @@ domain/
 - domain 层仅包含纯业务代码， **禁止引用技术框架**：MyBatis-Flex 运行时 API、Sa-Token（`StpUtil` 等）、MapStruct、Jakarta
   Validation、Spring Web、Redis、Jackson
 - **允许**：JDK、Lombok、Spring 的 `@Service` / `@Component` 注解与构造注入、`common` 包（基类、`BizException`、`BizAssert`
-  、静态工具）、领域枚举上的 MyBatis-Flex `@EnumValue` 注解
+  、静态工具）、Hutool 的非 IO 工具、领域枚举上的 MyBatis-Flex `@EnumValue` 注解
+- 通用工具直接调用 `cn.hutool.*`，不增加转发封装；Hutool 的 HTTP、文件、数据库等 IO API 仍禁止在 domain 中使用
 - Repository 接口定义在 domain 层，实现在 infrastructure 层
 - Repository 管理 **领域内**的数据库、缓存操作，不依赖 Adaptor，不调用第三方服务
 - 当前登录用户 ID 等上下文信息由外层通过 Param 显式传入，domain **禁止**调用 `StpUtil.getLoginId()`
@@ -48,7 +49,7 @@ public void cancel(CancelOrderParam param) {
 
 // ❌ 错误：领域层读取登录上下文
 public void cancel(CancelOrderParam param) {
-    long operatorId = StpUtil.getLoginIdAsLong(); // 依赖 Sa-Token，单元测试无法运行
+    Long operatorId = StpUtil.getLoginIdAsLong(); // 依赖 Sa-Token，单元测试无法运行
     
 }
 ```
@@ -370,7 +371,7 @@ public class SalePriceCalculateQueryAppService {
 
 #### 行为约束
 
-- **允许调用**：本领域聚合根方法、本领域 Repository、`common` 静态工具
+- **允许调用**：本领域聚合根方法、本领域 Repository、`common` 静态工具、Hutool 非 IO 工具
 - **禁止调用**：AppService、RepositoryImpl、Adaptor、其他领域的 DomainService / 聚合根 / Repository
 
 #### 异常处理
@@ -437,7 +438,7 @@ public class OrderDomainService {
 
 | 规则项   | 规范                                                                               | 示例                           |
 |----------|------------------------------------------------------------------------------------|--------------------------------|
-| 类名     | `{名词}Aggregate extends BaseAggregate<Long>`                                      | `OrderAggregate`               |
+| 类名     | `{名词}Aggregate extends BaseAggregate`                                      | `OrderAggregate`               |
 | Lombok   | `@Getter @Setter`，禁止 `@Data`（会生成基于所有字段的 equals，聚合根应按 id 比较） | —                              |
 | 构造     | 新建走静态工厂 `create({方法名}Param)`；保留无参构造供 Converter 重建              | `OrderAggregate.create(param)` |
 | 方法命名 | 动词                                                                               | `confirmPayment`、`cancel`     |
@@ -507,13 +508,15 @@ public boolean isPaid() {
 ```java
 package com.florian.sun.spring.template.domain.order.model.aggregate;
 
+import cn.hutool.core.util.IdUtil;
+
 /**
  * 订单聚合根
  * 聚合边界：订单主表 + 订单明细
  */
 @Getter
 @Setter
-public class OrderAggregate extends BaseAggregate<Long> {
+public class OrderAggregate extends BaseAggregate {
 
     private String orderNo;
     private Long buyerId;
@@ -528,7 +531,7 @@ public class OrderAggregate extends BaseAggregate<Long> {
     public static OrderAggregate create(CreateOrderParam param) {
         BizAssert.notEmpty(param.getItems(), OrderErrorCode.ORDER_ITEMS_EMPTY);
         OrderAggregate order = new OrderAggregate();
-        order.orderNo = IdUtils.nextNo("O");   // common/util 静态工具：前缀 + 时间戳 + 随机数
+        order.orderNo = "O" + IdUtil.getSnowflakeNextIdStr();
         order.buyerId = param.getBuyerId();
         order.receiver = param.getReceiver();
         order.items = param.getItems().stream().map(OrderItemEntity::create).collect(Collectors.toList());
@@ -571,7 +574,7 @@ Entity 遵循聚合根规范，差异如下：
 
 | 规则项   | 规范                                                  | 示例              |
 |----------|-------------------------------------------------------|-------------------|
-| 类名     | `{名词}Entity extends BaseEntity<Long>`               | `OrderItemEntity` |
+| 类名     | `{名词}Entity extends BaseEntity`               | `OrderItemEntity` |
 | Lombok   | `@Getter @Setter`（`BaseEntity` 已按 id 实现 equals） | —                 |
 | 归属     | 只能通过聚合根访问，不能被 Repository 单独存取        | —                 |
 | 属性类型 | 普通字段（不再使用 `Field<T>`）                       | —                 |
@@ -585,7 +588,7 @@ package com.florian.sun.spring.template.domain.order.model.entity;
  */
 @Getter
 @Setter
-public class OrderItemEntity extends BaseEntity<Long> {
+public class OrderItemEntity extends BaseEntity {
 
     private Long productId;
     private String productName;
@@ -668,19 +671,21 @@ public interface OrderRepository {
 }
 ```
 
-### 2.6 用户认证示例（domain 使用 common 静态工具）
+### 2.6 用户认证示例（domain 直接使用 Hutool）
 
-密码校验是领域规则，但哈希算法是技术细节。通过 `common/util/PasswordUtils`（包装 Sa-Token 的 `BCrypt`）让 domain 不直接依赖框架。
+密码校验直接调用 Hutool 的 `DigestUtil.bcryptCheck()`，不额外封装密码工具类。密码哈希在创建或修改密码时使用 `DigestUtil.bcrypt()`；新密码先校验非空且 UTF-8 编码后不超过 72 字节。
 
 ```java
 package com.florian.sun.spring.template.domain.user.model.aggregate;
+
+import cn.hutool.crypto.digest.DigestUtil;
 
 /**
  * 用户聚合根
  */
 @Getter
 @Setter
-public class UserAggregate extends BaseAggregate<Long> {
+public class UserAggregate extends BaseAggregate {
 
     private String username;
     private String nickname;
@@ -689,7 +694,8 @@ public class UserAggregate extends BaseAggregate<Long> {
     private MemberLevelEnum memberLevel;
 
     public void verifyPassword(String rawPassword) {
-        BizAssert.isTrue(PasswordUtils.matches(rawPassword, passwordHash), UserErrorCode.PASSWORD_INCORRECT);
+        BizAssert.notBlank(rawPassword, UserErrorCode.PASSWORD_INCORRECT);
+        BizAssert.isTrue(DigestUtil.bcryptCheck(rawPassword, passwordHash), UserErrorCode.PASSWORD_INCORRECT);
     }
 
     public void ensureActive() {
@@ -888,7 +894,7 @@ package com.florian.sun.spring.template.domain.coupon.model.aggregate;
  */
 @Getter
 @Setter
-public class CouponRuleAggregate extends BaseAggregate<Long> {
+public class CouponRuleAggregate extends BaseAggregate {
 
     private String ruleName;
     private Integer priority;

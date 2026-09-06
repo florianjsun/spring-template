@@ -1,5 +1,5 @@
 ---
-description: common 共享内核与 config 配置类规范：Result、ErrorCode、BizException、BaseAggregate、校验分组、Sa-Token / MyBatis-Flex / OpenAPI 配置模板
+description: common 共享内核与 config 配置类规范：Result、ErrorCode、BizException、BaseAggregate、校验分组、Hutool 工具使用、Sa-Token / MyBatis-Flex / OpenAPI 配置模板
 alwaysApply: true
 ---
 
@@ -16,14 +16,14 @@ common/
 ├── enums/             # BaseEnum 接口、跨领域共享枚举（如 YesNoEnum）
 ├── model/             # BaseAggregate、BaseEntity、PageQuery
 ├── validation/        # 校验分组 ValidGroup
-└── util/              # 无 IO 的静态工具（如 PasswordUtils）
+└── util/              # 按需创建，仅放 Hutool 未覆盖且确需跨层复用的无 IO 工具
 ```
 
 **包规范约束**：
 
 - 单一领域专用的枚举、错误码放 `domain/{业务名}/model/enums/`， **不要**塞进 `common`
 - `common` 不允许出现 Spring Bean（`@Service`、`@Component`），只能有 POJO、接口、枚举、静态工具
-- `common/util` 允许包装第三方 **无状态静态工具**（如 Sa-Token 的 `BCrypt`），这样 `domain` 无需直接 import 技术框架
+- 通用工具直接使用 `cn.hutool.*`，不在 `common/util` 中重复实现或仅做转发封装；Hutool 的非 IO 工具允许在 domain 层直接使用
 
 ## 二、依赖关系规范
 
@@ -227,14 +227,18 @@ public class BizException extends RuntimeException {
 
 ### 4.4 BizAssert
 
-领域层校验的标准写法，避免到处写 `if (...) throw new BizException(...)`。
+领域层校验的标准写法，封装 Hutool `Assert` 的 Supplier 重载，在断言失败时创建 `BizException`，统一保留业务错误码和提示信息。`notBlank` 使用 Hutool 的空白判定，包含不间断空格等 Unicode 空白字符。
 
 ```java
 package com.florian.sun.spring.template.common.exception;
 
+import cn.hutool.core.lang.Assert;
+
+import java.util.Collection;
+
 /**
  * 业务断言
- * 断言失败抛出 BizException
+ * 封装 Hutool Assert，断言失败抛出 BizException
  */
 public final class BizAssert {
 
@@ -242,27 +246,23 @@ public final class BizAssert {
     }
 
     public static void isTrue(boolean condition, ErrorCode errorCode) {
-        if (!condition) {
-            throw new BizException(errorCode);
-        }
+        Assert.isTrue(condition, () -> new BizException(errorCode));
     }
 
     public static void isTrue(boolean condition, ErrorCode errorCode, String message) {
-        if (!condition) {
-            throw new BizException(errorCode, message);
-        }
+        Assert.isTrue(condition, () -> new BizException(errorCode, message));
     }
 
     public static void notNull(Object obj, ErrorCode errorCode) {
-        isTrue(obj != null, errorCode);
+        Assert.notNull(obj, () -> new BizException(errorCode));
     }
 
     public static void notEmpty(Collection<?> collection, ErrorCode errorCode) {
-        isTrue(collection != null && !collection.isEmpty(), errorCode);
+        Assert.notEmpty(collection, () -> new BizException(errorCode));
     }
 
     public static void notBlank(String text, ErrorCode errorCode) {
-        isTrue(text != null && !text.isBlank(), errorCode);
+        Assert.notBlank(text, () -> new BizException(errorCode));
     }
 }
 ```
@@ -338,6 +338,8 @@ public enum OrderStatusEnum implements BaseEnum<Integer> {
 
 ## 六、领域基类
 
+项目中的主键及关联 ID 统一使用 `Long`，领域基类不使用 ID 泛型。
+
 ### 6.1 BaseAggregate
 
 ```java
@@ -349,10 +351,10 @@ package com.florian.sun.spring.template.common.model;
  */
 @Getter
 @Setter
-public abstract class BaseAggregate<ID> {
+public abstract class BaseAggregate {
 
     /** 主键，新建时为 null，save 后由 RepositoryImpl 回填 */
-    private ID id;
+    private Long id;
 
     /** 乐观锁版本号 */
     private Integer version;
@@ -378,9 +380,9 @@ package com.florian.sun.spring.template.common.model;
  */
 @Getter
 @Setter
-public abstract class BaseEntity<ID> {
+public abstract class BaseEntity {
 
-    private ID id;
+    private Long id;
 
     @Override
     public boolean equals(Object o) {
@@ -390,7 +392,7 @@ public abstract class BaseEntity<ID> {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        BaseEntity<?> that = (BaseEntity<?>) o;
+        BaseEntity that = (BaseEntity) o;
         return id != null && id.equals(that.id);
     }
 
@@ -461,52 +463,42 @@ public interface ValidGroup {
 
 使用示例见 `ddd-application-layer.md` 1.6 节。
 
-## 八、静态工具
+## 八、Hutool 工具使用规范
 
-`common/util` 只放 **无 IO、无状态**的静态方法。允许包装第三方静态工具，使 `domain` 不必直接依赖框架。
+项目统一引入 `cn.hutool:hutool-all`，当前版本为 `5.8.47`，版本固定在 `pom.xml` 中；升级时选择最新正式版并验证兼容性，不使用动态版本。
+
+- 通用工具优先直接使用 `cn.hutool.*` 下的现成 API，不重复编写工具类，也不新增只有方法转发的封装。
+- 字符串、集合、日期、随机数、ID、摘要等功能使用 Hutool；简单的 JDK 调用不要求机械替换。
+- Hutool 已覆盖的功能不再单独引入其他工具库。对象 DTO 映射继续遵循项目的 MapStruct 规范。
+- `common/util` 仅在 Hutool 未覆盖且确需跨层复用时创建，只放无 IO、无业务状态的方法。
+- 业务断言统一使用 `BizAssert`，内部封装 Hutool `Assert` 的 Supplier 重载并抛出 `BizException`；这种承载项目错误码和异常语义的封装允许保留，不直接使用 Hutool 默认的 `IllegalArgumentException` 代替业务异常。
+- domain 可以直接使用 Hutool 的字符串、集合、日期、密码哈希等非 IO API；HTTP、文件、数据库等 IO 调用仍按分层规范放在 adaptor / infrastructure。
+
+| 场景 | 直接使用 |
+|------|----------|
+| 字符串处理 | `cn.hutool.core.util.StrUtil` |
+| 集合处理 | `cn.hutool.core.collection.CollUtil` |
+| 日期处理 | `cn.hutool.core.date.DateUtil`、`LocalDateTimeUtil` |
+| 随机数 | `cn.hutool.core.util.RandomUtil` |
+| ID / 业务编号 | `cn.hutool.core.util.IdUtil` |
+| 密码哈希与校验 | `cn.hutool.crypto.digest.DigestUtil.bcrypt()` / `bcryptCheck()` |
+
+密码存储使用 BCrypt，不直接使用 MD5、SHA-1 或 SHA-256 快速摘要。新密码的非空校验与 UTF-8 编码后最多 72 字节的限制由调用处保证，不依赖 Hutool 自动拒绝超长输入。
 
 ```java
-package com.florian.sun.spring.template.common.util;
+import cn.hutool.crypto.digest.DigestUtil;
 
-import cn.dev33.satoken.secure.BCrypt;
-
-/**
- * 密码工具
- * 包装 Sa-Token 的 BCrypt，domain 层通过此类校验密码而不直接依赖 Sa-Token
- */
-public final class PasswordUtils {
-
-    private PasswordUtils() {
-    }
-
-    public static String encode(String rawPassword) {
-        return BCrypt.hashpw(rawPassword);
-    }
-
-    public static boolean matches(String rawPassword, String encodedPassword) {
-        return BCrypt.checkpw(rawPassword, encodedPassword);
-    }
-}
+// rawPassword 已通过入参校验。
+String passwordHash = DigestUtil.bcrypt(rawPassword);
+boolean matches = DigestUtil.bcryptCheck(rawPassword, passwordHash);
 ```
 
+主键及关联 ID 仍统一使用 `Long`；带前缀的业务编号是独立的字符串字段。直接组合 Hutool API，无需自定义编号工具类：
+
 ```java
-package com.florian.sun.spring.template.common.util;
+import cn.hutool.core.util.IdUtil;
 
-/**
- * 业务编号工具
- * 前缀 + 时间戳 + 随机数，个人项目量级足够；需要严格唯一时改用数据库序列或雪花算法
- */
-public final class IdUtils {
-
-    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
-
-    private IdUtils() {
-    }
-
-    public static String nextNo(String prefix) {
-        return prefix + LocalDateTime.now().format(FORMATTER) + ThreadLocalRandom.current().nextInt(1000, 9999);
-    }
-}
+String orderNo = "O" + IdUtil.getSnowflakeNextIdStr();
 ```
 
 **禁止**放入 `common/util` 的东西：需要注入 Bean 的类、访问数据库 / Redis / HTTP 的方法、包含业务判断的方法。

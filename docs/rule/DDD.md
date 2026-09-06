@@ -77,8 +77,9 @@ input adaptor → application → domain → Repository 接口（由 infrastruct
 ### 1.2 领域层的隔离性
 
 - `domain` 仅包含纯业务代码， **禁止**引用 MyBatis-Flex、Sa-Token、MapStruct、Jakarta Validation、Spring Web 等技术框架
-- 例外：Spring 的 `@Service` / `@Component` 注解、Lombok、JDK、`common` 包内的无状态静态工具，以及领域枚举上的 MyBatis-Flex
+- 例外：Spring 的 `@Service` / `@Component` 注解、Lombok、JDK、Hutool 的非 IO 工具、`common` 包内的无状态静态工具，以及领域枚举上的 MyBatis-Flex
   `@EnumValue` 注解（仅此一个，用于省掉 Converter 里的枚举互转）
+- 通用工具统一直接使用 `cn.hutool.*`，不重复实现或增加转发封装；Hutool 的 IO API 仍遵守 adaptor / infrastructure 边界。详见 `ddd-common-layer.md` 第八节。
 - 技术实现（数据库、鉴权、第三方 API）通过接口抽象，由 `infrastructure`、`adaptor` 提供实现
 
 ### 1.3 异常驱动的错误处理
@@ -129,7 +130,7 @@ com.florian.sun.spring.template
 │   ├── enums/                       # BaseEnum 及跨领域共享枚举
 │   ├── model/                       # BaseAggregate、BaseEntity、PageQuery
 │   ├── validation/                  # 校验分组 ValidGroup
-│   └── util/                        # 无 IO 静态工具
+│   └── util/                        # 按需创建，Hutool 未覆盖的无 IO 工具
 ├── domain/                          # 领域层
 │   └── {业务名}/
 │       ├── model/

@@ -12,6 +12,7 @@
 - **异常驱动**：领域层抛 `BizException`，全局异常处理器统一转 `Result<T>`
 - **技术栈落地**：每一层都给出 MyBatis-Flex、Sa-Token、MapStruct、Validation 的具体用法与边界
 - **AI 友好**：每个文件带 Cursor Rules frontmatter，可直接拷入 `.cursor/rules/`
+- **通用工具**：直接使用 `hutool-all` 中的 API，避免重复实现或仅做转发封装；详见 [Hutool 工具使用规范](ddd-common-layer.md#八hutool-工具使用规范)
 
 ## 文档结构
 
@@ -94,7 +95,7 @@ com.florian.sun.spring.template
 本规范假定 `pom.xml` 中已存在以下依赖（当前脚手架已声明）：MyBatis-Flex `mybatis-flex-spring-boot4-starter` +
 `mybatis-flex-processor`、Sa-Token `sa-token-spring-boot4-starter` + `sa-token-redis-template` + `sa-token-fastjson2`
 、MapStruct `mapstruct` + `mapstruct-processor`、`spring-boot-starter-validation`、`springdoc-openapi-starter-webmvc-ui`
-、Lombok。
+、Lombok、Hutool `hutool-all`（5.8.47）。
 
 需要补充的一项：MapStruct 与 Lombok 同时使用时，`maven-compiler-plugin` 的 `annotationProcessorPaths` 中必须在 `lombok` 与
 `mapstruct-processor` 之间加入 `org.projectlombok:lombok-mapstruct-binding`（0.2.0），否则 MapStruct 生成代码时看不到

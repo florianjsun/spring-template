@@ -1,3 +1,29 @@
 spring:
   application:
     name: spring-template
+  datasource:
+    url: jdbc:mysql://localhost:3306/spring_template?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+mybatis-flex:
+  global-config:
+    print-banner: false
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+sa-token:
+  token-name: satoken          # 请求头名称
+  timeout: 2592000             # token 有效期（秒），30 天
+  active-timeout: -1           # 不限制最低活跃频率
+  is-concurrent: true          # 允许同一账号多端登录
+  is-share: false              # 每次登录生成新 token
+  token-style: uuid
+  is-log: false
+  is-read-cookie: false        # 前后端分离，只读 header
